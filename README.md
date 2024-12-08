@@ -14,8 +14,8 @@ We propose a hierarchical planning approach for robot exploration and navigation
 * `scikit-image == 0.21.0`
 * `scikit-learn == 1.3.0`
 * `scipy == 1.10.1`
-* `matplotlib == 3.4.1`
-* `tensorboard == 2.8.0`
+* `matplotlib == 3.6.2`
+* `tensorboard == 2.11.0`
 
 ## Citation
 If you find our work helpful or enlightening, feel free to cite our paper:
