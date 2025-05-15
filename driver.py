@@ -13,7 +13,7 @@ from runner import RLRunner
 from parameter import *
 
 ray.init()
-print("Welcome to HDPlanner-Nav!")
+print("Welcome to HDPlanner!")
 
 writer = SummaryWriter(train_path)
 if not os.path.exists(model_path):
@@ -46,13 +46,16 @@ def main():
     log_alpha_optimizer1 = optim.Adam([log_alpha1], lr=1e-4)
     log_alpha_optimizer2 = optim.Adam([log_alpha2], lr=1e-4)
 
-    # target entropy for SAC, manually tune it for now
-    entropy_target1 = 0.02 * (-np.log(1 / LOCAL_K_SIZE))
-    entropy_target2 = 0.02 * (-np.log(1 / LOCAL_K_SIZE))
-
+    # target entropy for SAC
+    entropy_target1 = 0.1 * (-np.log(1 / LOCAL_K_SIZE))
+    entropy_target2 = 0.1 * (-np.log(1 / LOCAL_K_SIZE))
+    # origianl setting is 0.05 * (-np.log(1 / LOCAL_K_SIZE))
+    # entropy_target1 = 0.05 * (-np.log(1 / LOCAL_K_SIZE)) for test 0114
+    
     curr_episode = 0
     target_q_update_counter = 1
 
+    # load model and optimizer trained before
     if LOAD_MODEL:
         print('Loading Model...')
         checkpoint = torch.load(model_path + '/checkpoint.pth', map_location='cpu')
@@ -117,7 +120,7 @@ def main():
 
     # initialize training replay buffer
     experience_buffer = []
-    for i in range(24):
+    for i in range(21):
         experience_buffer.append([])
 
     # collect data from worker and do training
@@ -166,33 +169,32 @@ def main():
                     current_index_batch = torch.stack(rollouts[3]).to(device)
                     edge_inputs_batch = torch.stack(rollouts[4]).to(device)
                     edge_padding_mask_batch = torch.stack(rollouts[5]).to(device)
-                    target_index_batch = torch.stack(rollouts[6]).to(device)
-                    center_index_batch = torch.stack(rollouts[7]).to(device)
-                    center_padding_mask_batch = torch.stack(rollouts[8]).to(device)
-                    action_batch = torch.stack(rollouts[9]).to(device)
-                    reward_batch = torch.stack(rollouts[10]).to(device)
-                    done_batch = torch.stack(rollouts[11]).to(device)
-                    next_node_inputs_batch = torch.stack(rollouts[12]).to(device)
-                    next_node_padding_mask_batch = torch.stack(rollouts[13]).to(device)
-                    next_edge_mask_batch = torch.stack(rollouts[14]).to(device)
-                    next_current_index_batch = torch.stack(rollouts[15]).to(device)
-                    next_edge_inputs_batch = torch.stack(rollouts[16]).to(device)
-                    next_edge_padding_mask_batch = torch.stack(rollouts[17]).to(device)
-                    next_target_index_batch = torch.stack(rollouts[18]).to(device)
-                    next_center_index_batch = torch.stack(rollouts[19]).to(device)
-                    next_center_padding_mask_batch = torch.stack(rollouts[20]).to(device)
-                    optimal_center_index_batch = torch.stack(rollouts[21]).to(device)
-                    next_optimal_center_index_batch = torch.stack(rollouts[22]).to(device)
+                    center_index_batch = torch.stack(rollouts[6]).to(device)
+                    center_padding_mask_batch = torch.stack(rollouts[7]).to(device)
+                    action_batch = torch.stack(rollouts[8]).to(device)
+                    reward_batch = torch.stack(rollouts[9]).to(device)
+                    done_batch = torch.stack(rollouts[10]).to(device)
+                    next_node_inputs_batch = torch.stack(rollouts[11]).to(device)
+                    next_node_padding_mask_batch = torch.stack(rollouts[12]).to(device)
+                    next_edge_mask_batch = torch.stack(rollouts[13]).to(device)
+                    next_current_index_batch = torch.stack(rollouts[14]).to(device)
+                    next_edge_inputs_batch = torch.stack(rollouts[15]).to(device)
+                    next_edge_padding_mask_batch = torch.stack(rollouts[16]).to(device)
+                    next_center_index_batch = torch.stack(rollouts[17]).to(device)
+                    next_center_padding_mask_batch = torch.stack(rollouts[18]).to(device)
+                    optimal_center_index_batch = torch.stack(rollouts[19]).to(device)
+                    next_optimal_center_index_batch = torch.stack(rollouts[20]).to(device)
                   
-                    observation = [node_inputs_batch, edge_inputs_batch, current_index_batch, target_index_batch, center_index_batch, node_padding_mask_batch, edge_padding_mask_batch,
+                    il_observation = [node_inputs_batch, node_padding_mask_batch, edge_mask_batch, center_padding_mask_batch, center_index_batch, current_index_batch, edge_inputs_batch]
+                    observation = [node_inputs_batch, edge_inputs_batch, current_index_batch, center_index_batch, node_padding_mask_batch, edge_padding_mask_batch,
                                    edge_mask_batch, center_padding_mask_batch]
-                    next_observation = [next_node_inputs_batch, next_edge_inputs_batch, next_current_index_batch, next_target_index_batch, next_center_index_batch, next_node_padding_mask_batch, next_edge_padding_mask_batch,
+                    next_observation = [next_node_inputs_batch, next_edge_inputs_batch, next_current_index_batch, next_center_index_batch, next_node_padding_mask_batch, next_edge_padding_mask_batch,
                                    next_edge_mask_batch, next_center_padding_mask_batch]
-                    q_observation = [node_inputs_batch, edge_inputs_batch, current_index_batch, optimal_center_index_batch, center_index_batch, target_index_batch, node_padding_mask_batch, edge_padding_mask_batch,
+                    q_observation = [node_inputs_batch, edge_inputs_batch, current_index_batch, optimal_center_index_batch, center_index_batch, node_padding_mask_batch, edge_padding_mask_batch,
                                    edge_mask_batch]
-                    q_next_observation = [next_node_inputs_batch, next_edge_inputs_batch, next_current_index_batch, next_optimal_center_index_batch, next_center_index_batch, next_target_index_batch, next_node_padding_mask_batch, next_edge_padding_mask_batch,
+                    q_next_observation = [next_node_inputs_batch, next_edge_inputs_batch, next_current_index_batch, next_optimal_center_index_batch, next_center_index_batch, next_node_padding_mask_batch, next_edge_padding_mask_batch,
                                    next_edge_mask_batch]
-                    
+                   # SAC
                     with torch.no_grad():
                         center_q_values1, _, action_q_values1, _ = dp_q_net1(*q_observation)
                         center_q_values2, _, action_q_values2, _ = dp_q_net2(*q_observation)
@@ -268,7 +270,7 @@ def main():
                     log_alpha_optimizer2.step()
                     
                     target_q_update_counter += 1
-
+                    
                     # contrastive learning for center and action
                     center_logp, action_logp, \
                         selected_center_index, selected_action_index, \
@@ -357,7 +359,7 @@ def main():
         print("CTRL_C pressed. Killing remote workers")
         for a in meta_agents:
             ray.kill(a)
-            
+
 def get_contrastive_pairs(action_logp, center_node_features, center_index, index):
     valid_indices = torch.nonzero(action_logp > -1e7, as_tuple=False)
     has_valid_values = valid_indices[:, 0].unique()
@@ -385,6 +387,9 @@ def get_triplet_loss(anchor, positive, negative, margin=0.5):
     return loss
 
 def write_to_tensor_board(writer, tensorboard_data, curr_episode):
+    # each row in tensorboardData represents an episode
+    # each column is a specific metric
+
     tensorboard_data = np.array(tensorboard_data)
     tensorboard_data = list(np.nanmean(tensorboard_data, axis=0))
     reward, center_value, action_value, policy_loss, q_value_loss, center_entropy, action_entropy, policy_grad_norm, q_value_grad_norm, \

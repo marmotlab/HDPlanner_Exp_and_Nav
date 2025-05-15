@@ -14,8 +14,7 @@ class Env:
     def __init__(self, episode_index, plot=False):
         self.episode_index = episode_index
         self.plot = plot
-        # self.ground_truth, self.robot_cell = self.import_ground_truth(episode_index)
-        self.ground_truth, self.robot_cell, self.target_cell = self.import_ground_truth_pp_640_480(episode_index)
+        self.ground_truth, self.robot_cell = self.import_ground_truth(episode_index)
         self.ground_truth_size = np.shape(self.ground_truth)  # cell
         self.cell_size = CELL_SIZE  # meter
 
@@ -37,14 +36,13 @@ class Env:
         self.ground_truth_info = Map_info(self.ground_truth, self.belief_origin_x, self.belief_origin_y, self.cell_size)
         self.belief_info = Map_info(self.robot_belief, self.belief_origin_x, self.belief_origin_y, self.cell_size)
         self.global_frontiers = get_frontier_in_map(self.belief_info)
-        self.target_location = get_coords_from_cell_position(self.target_cell, self.belief_info)
         if self.plot:
             self.frame_files = []
             self.trajectory_x = [self.robot_location[0]]
             self.trajectory_y = [self.robot_location[1]]
 
     def import_ground_truth(self, episode_index):
-        map_dir = f'maps'
+        map_dir = f'train_exploration'
         map_list = os.listdir(map_dir)
         map_index = episode_index % np.size(map_list)
         ground_truth = (io.imread(map_dir + '/' + map_list[map_index], 1) * 255).astype(int)
@@ -58,24 +56,6 @@ class Env:
         ground_truth = ground_truth * 254 + 1
 
         return ground_truth, robot_cell
-
-    def import_ground_truth_pp_640_480(self, episode_index):
-        map_dir = f'train_640_480'
-        map_list = os.listdir(map_dir)
-        map_index = episode_index % np.size(map_list)
-        ground_truth = (io.imread(map_dir + '/' + map_list[map_index], 1) * 255).astype(int)
-        ground_truth = block_reduce(ground_truth, 2, np.min)
-
-        robot_cell = np.nonzero(ground_truth == 209)
-        robot_cell = np.array([np.array(robot_cell)[1, 10], np.array(robot_cell)[0, 10]])  
-        
-        target_cell = np.nonzero(ground_truth == 68)
-        target_cell = np.array([np.array(target_cell)[1, 10], np.array(target_cell)[0, 10]])
-        
-        ground_truth = (ground_truth > 150)|((ground_truth<=80)&(ground_truth>=60))
-        ground_truth = ground_truth * 254 + 1
-
-        return ground_truth, robot_cell, target_cell
 
     def update_robot_location(self, robot_location):
         self.robot_location = robot_location
@@ -91,17 +71,24 @@ class Env:
 
     def calculate_reward(self, astar_dist_cur, astar_dist_next):
         reward = 0
+        
         global_frontiers = get_frontier_in_map(self.belief_info)
         if global_frontiers.shape[0] == 0:
             delta_num = self.global_frontiers.shape[0]
         else:
             global_frontiers = global_frontiers.reshape(-1, 2)
+            frontiers_to_check = global_frontiers[:, 0] + global_frontiers[:, 1] * 1j
+            pre_frontiers_to_check = self.global_frontiers[:, 0] + self.global_frontiers[:, 1] * 1j
+            frontiers_num = np.intersect1d(frontiers_to_check, pre_frontiers_to_check).shape[0]
+            pre_frontiers_num = pre_frontiers_to_check.shape[0]
+            delta_num = pre_frontiers_num - frontiers_num
+        
+        reward += delta_num / 100
 
         self.global_frontiers = global_frontiers
         self.old_belief = deepcopy(self.robot_belief)
 
         reward -= 1.0
-        reward += (astar_dist_cur - astar_dist_next) / 32
         return reward
 
     def evaluate_exploration_rate(self):
@@ -109,7 +96,6 @@ class Env:
 
     def step(self, next_waypoint, astar_dist_cur, asta_dist_next):
         dist = np.linalg.norm(self.robot_location - next_waypoint)
-        dist_to_target = np.linalg.norm(next_waypoint - self.target_location)
         self.travel_dist += dist
         self.evaluate_exploration_rate()
         self.robot_location = next_waypoint
@@ -118,7 +104,7 @@ class Env:
         self.update_robot_belief()
         reward = self.calculate_reward(astar_dist_cur, asta_dist_next)
 
-        return reward, dist_to_target
+        return reward
 
     def plot_env(self, step, optimal_center, centers):
 
@@ -127,13 +113,11 @@ class Env:
         plt.axis('off')
         plt.plot((self.robot_location[0] - self.belief_origin_x) / self.cell_size,
                  (self.robot_location[1] - self.belief_origin_y) / self.cell_size, 'ro', markersize=10, zorder=5)
-        plt.plot((self.target_location[0] - self.belief_origin_x) / self.cell_size,
-                 (self.target_location[1] - self.belief_origin_y) / self.cell_size, 'rs', markersize=10, zorder=5)
         for center in centers:
             plt.plot((center[0] - self.belief_origin_x) / self.cell_size,
                     (center[1] - self.belief_origin_y) / self.cell_size, 'b^', markersize=6, zorder=6)
-        # plt.plot((optimal_center[0] - self.belief_origin_x) / self.cell_size,
-        #          (optimal_center[1] - self.belief_origin_y) / self.cell_size, 'r^', markersize=6, zorder=7)
+        plt.plot((optimal_center[0] - self.belief_origin_x) / self.cell_size,
+                 (optimal_center[1] - self.belief_origin_y) / self.cell_size, 'r^', markersize=6, zorder=7)
         plt.plot((np.array(self.trajectory_x) - self.belief_origin_x) / self.cell_size,
                  (np.array(self.trajectory_y) - self.belief_origin_y) / self.cell_size, 'b', linewidth=2, zorder=1)
         plt.suptitle('Explored ratio: {:.4g}  Travel distance: {:.4g}'.format(self.explored_rate, self.travel_dist))
@@ -142,4 +126,3 @@ class Env:
         plt.savefig('{}/{}_{}_samples.png'.format(gifs_path, self.episode_index, step), dpi=150)
         frame = '{}/{}_{}_samples.png'.format(gifs_path, self.episode_index, step)
         self.frame_files.append(frame)
-

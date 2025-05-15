@@ -19,7 +19,9 @@ class Runner(object):
         self.local_network.load_state_dict(weights)
 
     def do_job(self, episode_number):
-        save_img = True if episode_number >= 500 and episode_number % SAVE_IMG_GAP == 0 else False
+        # remind to fix this! ! !
+        # save_img = True if episode_number >= 500 and episode_number % SAVE_IMG_GAP == 0 else False
+        save_img = False
         worker = Worker(self.meta_agent_id, self.local_network, episode_number, device=self.device, save_image=save_img)
         worker.run_episode()
 

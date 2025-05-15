@@ -12,17 +12,15 @@ from local_node_manager_quadtree import Local_node_manager
 
 
 class Agent:
-    def __init__(self, target_location, policy_net, device='cpu', plot=False):
+    def __init__(self, policy_net, device='cpu', plot=False):
         self.device = device
         self.plot = plot
         self.policy_net = policy_net
-        self.init_target = True
         # location and global map
         self.location = None
         self.global_map_info = None
         self.ground_truth_info = None
         self.local_center = None
-        self.target_location = target_location
         # local map related parameters
         self.cell_size = CELL_SIZE
         self.downsample_size = NODE_RESOLUTION  # cell
@@ -44,9 +42,10 @@ class Agent:
         self.local_node_coords, self.utility, self.guidepost, self.centers, self.center_beacon = None, None, None, None, None
         self.current_local_index, self.local_adjacent_matrix, self.local_neighbor_indices = None, None, None
     
+        # self.momentum = np.zeros(2)
     def update_ground_truth_map(self, ground_truth_info):
         self.ground_truth_info = ground_truth_info
-        self.local_node_manager.update_all_graph(self.ground_truth_info, self.target_location)
+        self.local_node_manager.update_all_graph(self.ground_truth_info)
     
     def update_global_map(self, global_map_info):
         # no need in training because of shallow copy
@@ -71,15 +70,12 @@ class Agent:
         self.local_center = self.location
         self.update_local_map(self.local_center)
         self.update_local_frontiers()
-        if self.init_target:
-            self.local_node_manager.add_node_to_dict(self.target_location, self.local_frontier, self.global_map_info)
-            self.init_target = False
         self.local_node_manager.update_local_graph(self.location,
                                                    self.local_frontier,
                                                    self.local_map_info,
-                                                   self.extended_local_map_info, self.global_map_info, self.target_location)
-        self.local_node_coords, self.utility, self.guidepost, self.local_adjacent_matrix, self.current_local_index, self.local_neighbor_indices, self.centers, self.center_beacon, self.optimal_center, self.optimal_center_in_center_lst = \
-            self.local_node_manager.get_all_node_graph(self.location, self.target_location, global_map_info)
+                                                   self.extended_local_map_info, self.global_map_info)
+        self.local_node_coords, self.utility, self.guidepost, self.local_adjacent_matrix, self.current_local_index, self.local_neighbor_indices, self.centers, self.center_beacon, self.optimal_center= \
+            self.local_node_manager.get_all_node_graph(self.location, global_map_info)
 
     def get_local_observation(self):
         local_node_coords = self.local_node_coords
@@ -91,18 +87,12 @@ class Agent:
         current_local_edge = self.local_neighbor_indices
         n_local_node = local_node_coords.shape[0]
 
-        target_coords = self.target_location.repeat(n_local_node)
-        target_node_coords = target_coords.reshape(n_local_node, 2)
-
         current_local_node_coords = local_node_coords[self.current_local_index]
         local_node_coords = np.concatenate((local_node_coords[:, 0].reshape(-1, 1) - current_local_node_coords[0],
                                             local_node_coords[:, 1].reshape(-1, 1) - current_local_node_coords[1]),
                                            axis=-1) / 60
-        target_node_coords = np.concatenate((target_node_coords[:, 0].reshape(-1, 1) - current_local_node_coords[0],
-                                            target_node_coords[:, 1].reshape(-1, 1) - current_local_node_coords[1]),
-                                           axis=-1) / 60
 
-        local_node_inputs = np.concatenate((local_node_coords, local_node_utility, local_node_guidepost, target_node_coords, center_beacon), axis=1)
+        local_node_inputs = np.concatenate((local_node_coords, local_node_utility, local_node_guidepost, center_beacon), axis=1)
         local_node_inputs = torch.FloatTensor(local_node_inputs).unsqueeze(0).to(self.device)
 
         assert local_node_coords.shape[0] < LOCAL_NODE_PADDING_SIZE, f"nodes number is {local_node_coords.shape[0]}"
@@ -117,11 +107,6 @@ class Agent:
         current_local_index = torch.tensor([current_local_index]).reshape(1, 1, 1).to(self.device)
         
         local_node_coords_to_check = self.local_node_coords[:, 0] + self.local_node_coords[:, 1] * 1j
-        # get target index
-        target_node_index = np.argwhere(local_node_coords_to_check == self.target_location[0] + self.target_location[1] * 1j)
-        if target_node_index or target_node_index == [[0]]:
-            target_node_index = target_node_index[0][0]
-        target_index = torch.tensor([target_node_index]).unsqueeze(0).unsqueeze(0).to(self.device)  # (1,1,1)
         # get the centers index and paddings
         all_center_node_index = []
         for center in self.centers:
@@ -130,13 +115,13 @@ class Agent:
                 center_index = center_index[0][0]
             all_center_node_index.append(center_index)
         while len(all_center_node_index) < LOCAL_K_SIZE:
-            all_center_node_index.append(359)
+            all_center_node_index.append(0)
         all_center_node_index = all_center_node_index[:LOCAL_K_SIZE]
         all_center_index = torch.tensor(all_center_node_index).unsqueeze(0).unsqueeze(0).to(self.device)
         center_padding_mask = torch.zeros((1, 1, LOCAL_K_SIZE), dtype=torch.int64).to(self.device)
         center_one = torch.ones_like(center_padding_mask, dtype=torch.int64).to(self.device)
-        center_padding_mask = torch.where(all_center_index == 359, center_one, center_padding_mask)
-        # need to improve this center mask! ! !
+        center_padding_mask = torch.where(all_center_index == 0, center_one, center_padding_mask)
+
         local_edge_mask = torch.tensor(local_edge_mask).unsqueeze(0).to(self.device)
 
         padding = torch.nn.ConstantPad2d(
@@ -154,10 +139,10 @@ class Agent:
         local_edge_padding_mask[0, 0, current_in_edge] = 1
         padding = torch.nn.ConstantPad1d((0, LOCAL_K_SIZE - k_size), 1)
         local_edge_padding_mask = padding(local_edge_padding_mask)
-        return [local_node_inputs, current_local_edge, current_local_index, target_index, all_center_index, local_node_padding_mask, local_edge_padding_mask, local_edge_mask, center_padding_mask]
+        return [local_node_inputs, current_local_edge, current_local_index, all_center_index, local_node_padding_mask, local_edge_padding_mask, local_edge_mask, center_padding_mask]
     
     def select_next_waypoint(self, local_observation, i):
-        _, current_local_edge, _, _, _, _, _, _, _ = local_observation
+        _, current_local_edge, _, _, _, _, _, _ = local_observation
         with torch.no_grad():
             _, action_logp, _, _, _, _, _, _ = self.policy_net(*local_observation)
         action_index = torch.multinomial(action_logp.exp(), 1).long().squeeze(1)
@@ -257,16 +242,14 @@ class Agent:
         nodes = get_cell_position_from_coords(self.local_node_coords, self.global_map_info)
         # frontiers = get_cell_position_from_coords(self.local_frontier, self.local_map_info)
         robot = get_cell_position_from_coords(self.location, self.global_map_info)
-        target_node = get_cell_position_from_coords(self.target_location, self.global_map_info)
         plt.imshow(self.global_map_info.map, cmap='gray')
         plt.axis('off')
         plt.scatter(nodes[:, 0], nodes[:, 1], c=self.utility, zorder=2)
         #plt.scatter(frontiers[:, 0], frontiers[:, 1], c='r')
         plt.plot(robot[0], robot[1], 'ro', markersize=10, zorder=5)
-        plt.plot(target_node[0], target_node[1], 'rs', markersize=10, zorder=5)
-        for i in range(len(self.local_node_manager.x_center)):
-            plt.plot((self.local_node_manager.x_center[i] - self.global_map_info.map_origin_x) / self.cell_size,
-                   (self.local_node_manager.y_center[i] - self.global_map_info.map_origin_y) / self.cell_size, 'tan', zorder=1)   
+        # for i in range(len(self.local_node_manager.x_center)):
+        #     plt.plot((self.local_node_manager.x_center[i] - self.global_map_info.map_origin_x) / self.cell_size,
+        #            (self.local_node_manager.y_center[i] - self.global_map_info.map_origin_y) / self.cell_size, 'tan', zorder=1)   
         # print("local neighbor indices", len(self.local_neighbor_indices))  
         for i in range(len(self.local_neighbor_indices)):
             indice = self.local_neighbor_indices[i]

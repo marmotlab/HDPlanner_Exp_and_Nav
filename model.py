@@ -210,28 +210,27 @@ class PolicyNet(nn.Module):
     def __init__(self, input_dim, embedding_dim):
         super(PolicyNet, self).__init__()
         self.initial_embedding = nn.Linear(input_dim, embedding_dim) # layer for non-end position
-        self.target_embedding = nn.Linear(embedding_dim * 2, embedding_dim)
+        self.current_embedding1 = nn.Linear(embedding_dim * 2, embedding_dim)
         self.current_embedding2 = nn.Linear(embedding_dim * 3, embedding_dim)
         self.encoder = Encoder(embedding_dim=embedding_dim, n_head=8, n_layer=6)
-        self.target_decoder = Decoder(embedding_dim=embedding_dim, n_head=8, n_layer=1)
+        self.current_node_decoder1 = Decoder(embedding_dim=embedding_dim, n_head=8, n_layer=1)
         self.current_node_decoder2 = Decoder(embedding_dim=embedding_dim, n_head=8, n_layer=1)
         self.pointer1 = SingleHeadAttention(embedding_dim)
         self.pointer2 = SingleHeadAttention(embedding_dim)
 
-    def graph_encoder_and_center_decoder(self, node_inputs, node_padding_mask, edge_mask, center_mask, center_index, target_index, current_index, edge_inputs):
+    def graph_encoder_and_center_decoder(self, node_inputs, node_padding_mask, edge_mask, center_mask, center_index, current_index, edge_inputs):
         # encoder
         node_feature = self.initial_embedding(node_inputs)
         enhanced_node_feature = self.encoder(src=node_feature, key_padding_mask=node_padding_mask, attn_mask=edge_mask)
         # decoder1 - select center
         center_index = center_index.permute(0, 2, 1)
         embedding_dim = enhanced_node_feature.size()[2]
-        target_node_feature = torch.gather(enhanced_node_feature, 1, target_index.repeat(1, 1, embedding_dim))
         current_node_feature = torch.gather(enhanced_node_feature, 1, current_index.repeat(1, 1, embedding_dim))
         center_node_features = torch.gather(enhanced_node_feature, 1, center_index.repeat(1, 1, embedding_dim))
-
-        enhanced_target_node_feature, _ = self.target_decoder(target_node_feature, enhanced_node_feature, node_padding_mask)
-        embedding_target_node_feature = self.target_embedding(torch.cat((enhanced_target_node_feature, target_node_feature), dim=-1))
-        center_logp = self.pointer1(embedding_target_node_feature, center_node_features, center_mask)
+        
+        enhanced_current_node_feature, _ = self.current_node_decoder1(current_node_feature, enhanced_node_feature, node_padding_mask)
+        embedding_current_node_feature = self.current_embedding1(torch.cat((enhanced_current_node_feature, current_node_feature), dim=-1))
+        center_logp = self.pointer1(embedding_current_node_feature, center_node_features, center_mask)
         center_logp = center_logp.squeeze(1) # batch_size*k_size
         center_logp_index = torch.argmax(center_logp, dim=1).long()
         selected_center_index = center_index[torch.arange(center_index.size(0)), center_logp_index, :]
@@ -261,9 +260,9 @@ class PolicyNet(nn.Module):
         selected_action_feature = selected_action_feature.unsqueeze(1)       
         return action_logp, neighboring_feature, selected_action_index, selected_action_feature
 
-    def forward(self, node_inputs, edge_inputs, current_index, target_index, all_center_index, node_padding_mask=None, edge_padding_mask=None, edge_mask=None, center_mask=None):
+    def forward(self, node_inputs, edge_inputs, current_index, all_center_index, node_padding_mask=None, edge_padding_mask=None, edge_mask=None, center_mask=None):
         enhanced_node_feature, enhanced_current_node_feature, selected_center_index, selected_center_feature, center_logp, center_node_features = self.graph_encoder_and_center_decoder(\
-            node_inputs, node_padding_mask, edge_mask, center_mask, all_center_index, target_index, current_index, edge_inputs)
+            node_inputs, node_padding_mask, edge_mask, center_mask, all_center_index, current_index, edge_inputs)
         action_logp, neighboring_features, selected_action_index, selected_action_feature = self.output_policy(enhanced_node_feature, enhanced_current_node_feature, edge_inputs, edge_padding_mask, selected_center_feature, node_padding_mask)
         return center_logp, action_logp, \
             selected_center_index, selected_action_index, \
@@ -276,7 +275,7 @@ class QNet(nn.Module):
         self.current_embedding1 = nn.Linear(embedding_dim * 2, embedding_dim)
         self.current_embedding2 = nn.Linear(embedding_dim * 3, embedding_dim)
         self.encoder = Encoder(embedding_dim=embedding_dim, n_head=8, n_layer=6)
-        self.target_node_decoder = Decoder(embedding_dim=embedding_dim, n_head=8, n_layer=1)
+        self.current_node_decoder1 = Decoder(embedding_dim=embedding_dim, n_head=8, n_layer=1)
         self.current_node_decoder2 = Decoder(embedding_dim=embedding_dim, n_head=8, n_layer=1)
         self.pointer1 = SingleHeadAttention(embedding_dim)
         self.pointer2 = SingleHeadAttention(embedding_dim)
@@ -284,23 +283,21 @@ class QNet(nn.Module):
         self.q_values_layer1 = nn.Linear(embedding_dim * 2, 1)
         self.q_values_layer2 = nn.Linear(embedding_dim * 2, 1)
 
-    def graph_encoder_and_center_decoder(self, node_inputs, node_padding_mask, edge_mask, optimal_center_index, center_index, target_index, current_index, edge_inputs):
+    def graph_encoder_and_center_decoder(self, node_inputs, node_padding_mask, edge_mask, optimal_center_index, center_index, current_index, edge_inputs):
         # q encoder
         node_feature = self.initial_embedding(node_inputs)
         enhanced_node_feature = self.encoder(src=node_feature, key_padding_mask=node_padding_mask, attn_mask=edge_mask)
         # decoder1 - select center
         center_index = center_index.permute(0, 2, 1)
         embedding_dim = enhanced_node_feature.size()[2]
-        target_node_feature = torch.gather(enhanced_node_feature, 1, target_index.repeat(1, 1, embedding_dim))
         current_node_feature = torch.gather(enhanced_node_feature, 1, current_index.repeat(1, 1, embedding_dim))
         center_node_features = torch.gather(enhanced_node_feature, 1, center_index.repeat(1, 1, embedding_dim))
-        enhanced_target_node_feature, attention_weights = self.target_node_decoder(target_node_feature, enhanced_node_feature, node_padding_mask)
-        embedding_target_node_feature = self.current_embedding1(torch.cat((enhanced_target_node_feature, target_node_feature), dim=-1))
-        center_feature = torch.cat((embedding_target_node_feature.repeat(1, LOCAL_K_SIZE, 1), center_node_features), dim=-1) # batch_size*k_size*embedding_dim
+        enhanced_current_node_feature, attention_weights = self.current_node_decoder1(current_node_feature, enhanced_node_feature, node_padding_mask)
+        embedding_current_node_feature = self.current_embedding1(torch.cat((enhanced_current_node_feature, current_node_feature), dim=-1))
+        center_feature = torch.cat((embedding_current_node_feature.repeat(1, LOCAL_K_SIZE, 1), center_node_features), dim=-1) # batch_size*k_size*embedding_dim
         q_values = self.q_values_layer1(center_feature)
         selected_center_index = torch.argmax(q_values, dim=1).long()
         selected_center_node_feature = torch.gather(center_node_features, 1, selected_center_index.unsqueeze(1).repeat(1, 1, embedding_dim))
-        # print("selected_center_node_feature", selected_center_node_feature.size()) # batch_size*1*embedding_dim
         
         return q_values, attention_weights, selected_center_index, selected_center_node_feature, enhanced_node_feature, current_node_feature
     
@@ -312,6 +309,8 @@ class QNet(nn.Module):
         embedding_dim = enhanced_node_feature.size()[2]
         neigboring_feature = torch.gather(enhanced_node_feature, 1, current_edge.repeat(1, 1, embedding_dim))
         enhanced_current_node_feature, attention_weights = self.current_node_decoder2(current_node_feature, enhanced_node_feature, node_padding_mask)
+        # print("enhanced_current_node_feature", enhanced_current_node_feature.size()) # batch_size*1*embedding_dim
+        # print("current_node_feature", current_node_feature.size()) # batch_size*1*embedding_dim
         embedding_current_node_feature = self.current_embedding2(torch.cat((enhanced_current_node_feature, current_node_feature, selected_center_feature), dim=-1))
         action_features = torch.cat((embedding_current_node_feature.repeat(1, LOCAL_K_SIZE, 1), neigboring_feature), dim=-1)
         q_values = self.q_values_layer2(action_features)
@@ -328,9 +327,9 @@ class QNet(nn.Module):
 
         return q_values, attention_weights
 
-    def forward(self, node_inputs, edge_inputs, current_index, optimal_center_index, center_index, target_index, node_padding_mask=None, edge_padding_mask=None, edge_mask=None, center_mask=None):
+    def forward(self, node_inputs, edge_inputs, current_index, optimal_center_index, center_index, node_padding_mask=None, edge_padding_mask=None, edge_mask=None, center_mask=None):
         centers_q_values, attention_weights1, selected_center_index, selected_center_feature, enhanced_node_feature, current_node_feature  = self.graph_encoder_and_center_decoder(\
-            node_inputs, node_padding_mask, edge_mask, optimal_center_index, center_index, target_index, current_index, edge_inputs)
+            node_inputs, node_padding_mask, edge_mask, optimal_center_index, center_index, current_index, edge_inputs)
         action_q_values, attention_weights2 = self.output_q_values(enhanced_node_feature, current_node_feature, edge_inputs, edge_padding_mask, selected_center_feature, node_padding_mask)
         return centers_q_values, attention_weights1, \
             action_q_values, attention_weights2

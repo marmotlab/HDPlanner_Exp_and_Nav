@@ -10,7 +10,6 @@ class Local_node_manager:
     def __init__(self, plot=False):
         self.local_nodes_dict = quads.QuadTree((0, 0), 1000, 1000)
         self.all_nodes_dict = quads.QuadTree((0, 0), 1000, 1000)
-        self.init_target_frontiers = True
         self.plot = plot
         if self.plot:
             self.x = []
@@ -36,7 +35,7 @@ class Local_node_manager:
         node = All_node(coords)
         self.all_nodes_dict.insert(point=key, data=node)
 
-    def update_local_graph(self, robot_location, local_frontiers, local_map_info, extended_local_map_info, global_map_info, target_location):
+    def update_local_graph(self, robot_location, local_frontiers, local_map_info, extended_local_map_info, global_map_info):
         local_node_coords, _ = get_local_node_coords(robot_location, local_map_info)
         for coords in local_node_coords:
             node = self.check_node_exist_in_dict(coords)
@@ -48,34 +47,15 @@ class Local_node_manager:
                     pass
                 else:
                     node.update_node_observable_frontiers(local_frontiers, extended_local_map_info)
-        x_min = (extended_local_map_info.map_origin_x // NODE_RESOLUTION + 1) * NODE_RESOLUTION
-        y_min = (extended_local_map_info.map_origin_y // NODE_RESOLUTION + 1) * NODE_RESOLUTION
-        x_max = ((extended_local_map_info.map_origin_x + extended_local_map_info.map.shape[1] * CELL_SIZE) // NODE_RESOLUTION) * NODE_RESOLUTION
-        y_max = ((extended_local_map_info.map_origin_y + extended_local_map_info.map.shape[0] * CELL_SIZE) // NODE_RESOLUTION) * NODE_RESOLUTION
-        
-        if x_min <= target_location[0] <= x_max and y_min <= target_location[1] <= y_max:
-            target_cell = get_cell_position_from_coords(target_location, global_map_info)
-            if global_map_info.map[target_cell[1], target_cell[0]] == 255:
-                # print("update target frontier")
-                node = self.check_node_exist_in_dict(target_location)
-                node = node.data
-                if self.init_target_frontiers:
-                    node.initialize_observable_frontiers(local_frontiers, extended_local_map_info)
-                    self.init_target_frontiers = False
-                elif node.utility == 0 or np.linalg.norm(node.coords - robot_location) > 2 * SENSOR_RANGE:
-                    pass
-                else:
-                    node.update_node_observable_frontiers(local_frontiers, extended_local_map_info)
             
         for coords in local_node_coords:
             node = self.local_nodes_dict.find((coords[0], coords[1])).data
 
             plot_x = self.x if self.plot else None
             plot_y = self.y if self.plot else None
-            node.update_neighbor_nodes(extended_local_map_info, global_map_info, self.local_nodes_dict, target_location, plot_x, plot_y)
+            node.update_neighbor_nodes(extended_local_map_info, global_map_info, self.local_nodes_dict, plot_x, plot_y)
 
-    def update_all_graph(self, ground_truth_info, target_location):
-        self.add_node_to_all_dict(target_location)
+    def update_all_graph(self, ground_truth_info):
         all_node_coords = get_all_node_coords(ground_truth_info)
         new_all_node_coords = []
         for coords in all_node_coords:
@@ -84,15 +64,12 @@ class Local_node_manager:
                 self.add_node_to_all_dict(coords)
         for node in self.all_nodes_dict.__iter__():
             node = node.data
-            node.update_neighbor_nodes(ground_truth_info, self.all_nodes_dict, target_location)
+            node.update_neighbor_nodes(ground_truth_info, self.all_nodes_dict)
 
-    def get_all_node_graph(self, robot_location, target_location, global_map_info):
+    def get_all_node_graph(self, robot_location, global_map_info):
         all_node_coords = []
         for node in self.local_nodes_dict.__iter__():
             coords = node.data.coords
-            if coords[0] == target_location[0] and coords[1] == target_location[1]:
-                all_node_coords.append(coords)
-                continue
             cell = get_cell_position_from_coords(coords, global_map_info)
             if cell[1] < global_map_info.map.shape[0] and cell[0] < global_map_info.map.shape[1]:
                 if global_map_info.map[cell[1], cell[0]] == 255:
@@ -116,11 +93,8 @@ class Local_node_manager:
 
         utility = np.array(utility)
         guidepost = np.array(guidepost)
-        # sorted_centers = self.find_sorted_centers(utility, all_node_coords, target_location, global_map_info)
-        sorted_centers = self.find_sorted_centers_from_all_nodes_dict(utility, all_node_coords, target_location, global_map_info)
-        # optimal_center = self.find_optimal_center(sorted_centers, target_location, global_map_info)
-        optimal_center, optimal_center_index_in_center_lst = self.find_optimal_center_from_all_nodes_dict(sorted_centers, target_location, global_map_info)
-        adjacent_matrix = self.find_centers_of_target(all_node_coords, sorted_centers, target_location, adjacent_matrix)
+        sorted_centers = self.find_sorted_centers_from_all_nodes_dict(utility, all_node_coords, global_map_info, robot_location)
+        optimal_center = self.find_optimal_center_from_all_nodes_dict(utility, all_node_coords, sorted_centers, global_map_info, robot_location)
         center_beacon = np.zeros((n_nodes, 1))
         for node in sorted_centers:
             index = np.argwhere(local_node_coords_to_check == node[0] + node[1]*1j)
@@ -129,9 +103,9 @@ class Local_node_manager:
             center_beacon[index] = 1
         current_index = np.argwhere(local_node_coords_to_check == robot_location[0] + robot_location[1] * 1j)[0][0]
         neighbor_indices = np.argwhere(adjacent_matrix[current_index] == 0).reshape(-1)
-        return all_node_coords, utility, guidepost, adjacent_matrix, current_index, neighbor_indices, sorted_centers, center_beacon, optimal_center, optimal_center_index_in_center_lst
+        return all_node_coords, utility, guidepost, adjacent_matrix, current_index, neighbor_indices, sorted_centers, center_beacon, optimal_center
 
-    def find_sorted_centers(self, utility, all_node_coords, target_location, global_map_info):
+    def find_sorted_centers(self, utility, all_node_coords, global_map_info):
         local_node_coords_to_check = all_node_coords[:, 0] + all_node_coords[:, 1] * 1j
         center_indices = []
         non_zero_utility_node_indices = np.argwhere(utility > 0)[:, 0].tolist()
@@ -159,16 +133,11 @@ class Local_node_manager:
         else:
             for center in centers:
                 center_indices.append(np.argwhere(local_node_coords_to_check == center[0] + center[1] * 1j)[0][0])
-        target_cell = get_cell_position_from_coords(target_location, global_map_info)
-        if global_map_info.map[target_cell[1], target_cell[0]] == 255:
-            # print("add target as target")
-            center_indices.append(np.argwhere(local_node_coords_to_check == target_location[0] + target_location[1] * 1j)[0][0])
         center_indices = list(set(center_indices))
         centers = all_node_coords[center_indices]
-        sorted_centers = np.array(sorted(centers, key=lambda center: np.linalg.norm(center - target_location, axis=0)))
-        return sorted_centers
+        return centers
 
-    def find_sorted_centers_from_all_nodes_dict(self, utility, all_node_coords, target_location, global_map_info):
+    def find_sorted_centers_from_all_nodes_dict(self, utility, all_node_coords, global_map_info, robot_location):
         local_node_coords_to_check = all_node_coords[:, 0] + all_node_coords[:, 1] * 1j
         center_indices = []
         non_zero_utility_node_indices = np.argwhere(utility > 0)[:, 0].tolist()
@@ -196,71 +165,27 @@ class Local_node_manager:
         else:
             for center in centers:
                 center_indices.append(np.argwhere(local_node_coords_to_check == center[0] + center[1] * 1j)[0][0])
-        target_cell = get_cell_position_from_coords(target_location, global_map_info)
-        if global_map_info.map[target_cell[1], target_cell[0]] == 255:
-            # print("add target as target")
-            center_indices.append(np.argwhere(local_node_coords_to_check == target_location[0] + target_location[1] * 1j)[0][0])
         center_indices = list(set(center_indices))
-        # tmp bug fix
-        if len(center_indices) == 0:
-            print("should add target to centers")
-            center_indices.append(np.argwhere(local_node_coords_to_check == target_location[0] + target_location[1] * 1j)[0][0])
         centers = all_node_coords[center_indices]
-        sorted_centers = np.array(sorted(centers, key=lambda center: self.a_star_for_all_nodes_dict(center, target_location)[1]))
-        return sorted_centers
+        if len(centers) == 0:
+            assert utility.sum() == 0, "centers is empty but utility is not zero"
+            center_index = np.argwhere(local_node_coords_to_check == robot_location[0] + robot_location[1] * 1j)[0][0]
+            center_index = list([center_index])
+            centers = all_node_coords[center_index]
+        return centers
 
-    def find_optimal_center_from_all_nodes_dict(self, centers, target_location, global_map_info):
-        assert len(centers) > 0, "should add more centers"
-        target_cell = get_cell_position_from_coords(target_location, global_map_info)
-        if global_map_info.map[target_cell[1], target_cell[0]] == 255:
-            centers_to_check = centers[:, 0] + centers[:, 1] * 1j
-            optimal_center_index_in_center_lst = np.argwhere(centers_to_check == target_location[0] + target_location[1] * 1j)[0][0]
-            return target_location, optimal_center_index_in_center_lst
-        optimal_center = min(centers, key=lambda center: self.a_star_for_all_nodes_dict(center, target_location)[1])
-        centers_to_check = centers[:, 0] + centers[:, 1] * 1j
-        optimal_center_index_in_center_lst = np.argwhere(centers_to_check == optimal_center[0] + optimal_center[1] * 1j)[0][0]
-        return optimal_center, optimal_center_index_in_center_lst
+    def find_optimal_center_from_all_nodes_dict(self, utility, all_node_coords, centers, global_map_info, robot_location):
+        if len(centers) == 0:
+            assert utility.sum() == 0, "centers is empty but utility is not zero"
+            return robot_location
+        else:
+            optimal_center = min(centers, key=lambda center: np.linalg.norm(center - robot_location, axis=0))
+            return optimal_center
 
-    def find_optimal_center(self, centers, target_location, global_map_info):
-        target_cell = get_cell_position_from_coords(target_location, global_map_info)
-        if global_map_info.map[target_cell[1], target_cell[0]] == 255:
-            # print("optimal center is target")
-            return target_location
-        dist_list = np.linalg.norm((target_location - centers), axis=-1)
-        sorted_index = np.argsort(dist_list)
-        k = 0
-        while k < sorted_index.shape[0]:
-            optimal_center_index = sorted_index[k]
-            optimal_center = centers[optimal_center_index]
-            if optimal_center[0] != target_location[0] or optimal_center[1] != target_location[1]:
-                return optimal_center
-            k += 1
+    def find_optimal_center(self, centers, global_map_info):
+        # rewrite this part
         print("cannot find the optimal center")
         return None   
-    
-    def find_centers_of_target(self, all_node_coords, centers, target_location, adjacent_matrix):
-        self.x_center, self.y_center = [], []
-        dist_list = np.linalg.norm((target_location-centers), axis=-1)
-        sorted_index = np.argsort(dist_list)
-        k = 0
-        local_node_coords_to_check = all_node_coords[:, 0] + all_node_coords[:, 1] * 1j
-        a = np.argwhere(local_node_coords_to_check == target_location[0] + target_location[1]*1j)
-        if a or a == [[0]]:
-            a = a[0][0]
-        while k < CENTER_SIZE and k< centers.shape[0]:
-            neighbor_index = sorted_index[k]
-            dist = dist_list[k]
-            center = centers[neighbor_index]
-            b = np.argwhere(local_node_coords_to_check == center[0] + center[1]*1j)
-            if b or b == [[0]]:
-                b = b[0][0]
-            adjacent_matrix[a, b] = 0
-            adjacent_matrix[b, a] = 0
-            k += 1
-            self.x_center.append([center[0], target_location[0]])
-            self.y_center.append([center[1], target_location[1]])
-        
-        return adjacent_matrix
     
     def h(self, coords_1, coords_2):
         # h = abs(coords_1[0] - coords_2[0]) + abs(coords_1[1] - coords_2[1])
@@ -410,7 +335,7 @@ class Local_node:
         self.coords = coords
         self.utility_range = UTILITY_RANGE
         self.observable_frontiers = self.initialize_observable_frontiers(local_frontiers, extended_local_map_info)
-        self.utility = 1 if self.observable_frontiers.shape[0] > MIN_UTILITY else 0
+        self.utility = self.observable_frontiers.shape[0] if self.observable_frontiers.shape[0] > MIN_UTILITY else 0
         self.utility_share = [self.utility]
         self.visited = 0
 
@@ -435,7 +360,7 @@ class Local_node:
             observable_frontiers = np.array(observable_frontiers)
             return observable_frontiers
 
-    def update_neighbor_nodes(self, extended_local_map_info, global_map_info, nodes_dict, target_location, plot_x=None, plot_y=None):
+    def update_neighbor_nodes(self, extended_local_map_info, global_map_info, nodes_dict, plot_x=None, plot_y=None):
         for i in range(self.neighbor_matrix.shape[0]):
             for j in range(self.neighbor_matrix.shape[1]):
                 if self.neighbor_matrix[i, j] != -1:
@@ -456,8 +381,6 @@ class Local_node:
                                 self.neighbor_matrix[i, j] = 1
                             continue
                     else:
-                        # if neighbor_coords[0] == target_location[0] and neighbor_coords[1] == target_location[1]:
-                        #     print("find target node as neighbor in uniform points")
                         neighbor_node = neighbor_node.data
                         collision = check_collision(self.coords, neighbor_coords, global_map_info)
                         neighbor_matrix_x = center_index + (center_index - i)
@@ -472,15 +395,6 @@ class Local_node:
                             if plot_x is not None and plot_y is not None:
                                 plot_x.append([self.coords[0], neighbor_coords[0]])
                                 plot_y.append([self.coords[1], neighbor_coords[1]])
-                                
-        if not check_collision(self.coords, target_location, global_map_info):
-            self.neighbor_list.append(target_location)
-            target_node = nodes_dict.find((target_location[0], target_location[1]))
-            target_node = target_node.data
-            target_node.neighbor_list.append(self.coords)
-            if plot_x is not None and plot_y is not None:
-                plot_x.append([self.coords[0], target_location[0]])
-                plot_y.append([self.coords[1], target_location[1]])
 
     def update_node_observable_frontiers(self, local_frontiers, extended_local_map_info):
         
@@ -510,9 +424,7 @@ class Local_node:
                 if not collision:
                     self.observable_frontiers = np.concatenate((self.observable_frontiers, point.reshape(1, 2)), axis=0)
         self.utility = self.observable_frontiers.shape[0]
-        if self.utility > MIN_UTILITY:
-            self.utility = 1
-        else:
+        if self.utility <= MIN_UTILITY:
             self.utility = 0
         self.utility_share[0] = self.utility
 
@@ -532,7 +444,7 @@ class All_node:
         self.neighbor_list.append(self.coords)
         self.need_update_neighbor = True
 
-    def update_neighbor_nodes(self, ground_truth_info, nodes_dict, target_location):
+    def update_neighbor_nodes(self, ground_truth_info, nodes_dict):
         for i in range(self.neighbor_matrix.shape[0]):
             for j in range(self.neighbor_matrix.shape[1]):
                 if self.neighbor_matrix[i, j] != -1:
@@ -553,8 +465,6 @@ class All_node:
                                 self.neighbor_matrix[i, j] = 1
                             continue
                     else:
-                        # if neighbor_coords[0] == target_location[0] and neighbor_coords[1] == target_location[1]:
-                        #     print("find target node as neighbor in uniform points")
                         neighbor_node = neighbor_node.data
                         collision = check_collision(self.coords, neighbor_coords, ground_truth_info)
                         neighbor_matrix_x = center_index + (center_index - i)
@@ -565,9 +475,3 @@ class All_node:
 
                             neighbor_node.neighbor_matrix[neighbor_matrix_x, neighbor_matrix_y] = 1
                             neighbor_node.neighbor_list.append(self.coords)
-                                
-        if not check_collision(self.coords, target_location, ground_truth_info):
-            self.neighbor_list.append(target_location)
-            target_node = nodes_dict.find((target_location[0], target_location[1]))
-            target_node = target_node.data
-            target_node.neighbor_list.append(self.coords)
